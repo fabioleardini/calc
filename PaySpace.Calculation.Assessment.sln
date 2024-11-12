@@ -1,0 +1,33 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PaySpace.Calculation.Assessment.Console", "PaySpace.Calculation.Assessment.Console\PaySpace.Calculation.Assessment.Console.csproj", "{0EAE1AF5-973E-4953-9EF1-EFA9751DB878}"
+EndProject
+Project("{00D1A9C2-B5F0-4AF3-8072-F6C62B433612}") = "PaySpace.Calculation.Assessment.Database", "PaySpace.Calculation.Assessment.Database\PaySpace.Calculation.Assessment.Database.sqlproj", "{077D4E33-B836-43F4-84F5-42B67239508B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0EAE1AF5-973E-4953-9EF1-EFA9751DB878}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0EAE1AF5-973E-4953-9EF1-EFA9751DB878}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0EAE1AF5-973E-4953-9EF1-EFA9751DB878}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0EAE1AF5-973E-4953-9EF1-EFA9751DB878}.Release|Any CPU.Build.0 = Release|Any CPU
+		{077D4E33-B836-43F4-84F5-42B67239508B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{077D4E33-B836-43F4-84F5-42B67239508B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{077D4E33-B836-43F4-84F5-42B67239508B}.Debug|Any CPU.Deploy.0 = Debug|Any CPU
+		{077D4E33-B836-43F4-84F5-42B67239508B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{077D4E33-B836-43F4-84F5-42B67239508B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{077D4E33-B836-43F4-84F5-42B67239508B}.Release|Any CPU.Deploy.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {69F53373-ACD7-439D-8598-C178877ABEBA}
+	EndGlobalSection
+EndGlobal
