@@ -1,8 +1,7 @@
 using System.Data.SqlClient;
 using System.Diagnostics;
+using System.Text;
 using Dapper;
-using System.Collections.Concurrent;
-using System.Threading.Tasks.Dataflow;
 
 namespace PaySpace.Calculation.Assessment.Console.UseCases
 {
@@ -19,70 +18,62 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
         {
             try
             {
-                // Load tax rates and brackets in bulk to reduce individual queries
+                // Load tax rates and brackets in bulk into memory for quick lookup
                 var countryTaxData = await LoadCountryTaxDataAsync();
 
                 string taxCalculationQuery = @"
                     SELECT tc.FkCountryId, tc.Income, tc.PkTaxCalculationId, c.TaxRegime
                     FROM TaxCalculation tc WITH(NOLOCK)
-                    INNER JOIN Country c WITH(NOLOCK) ON tc.FkCountryId = c.PkCountryId
-                    LEFT JOIN TaxBracket tb WITH(NOLOCK) ON tc.FkCountryId = tb.FkCountryId";
+                    INNER JOIN Country c WITH(NOLOCK) ON tc.FkCountryId = c.PkCountryId";
 
                 Stopwatch sw = Stopwatch.StartNew();
 
+                // Fetch all tax calculations at once to minimize database calls
                 using SqlConnection conn = new(ConnectionString);
                 await conn.OpenAsync();
+                var taxCalculations = (await conn.QueryAsync(taxCalculationQuery)).ToList();
+                
+                var updateList = new List<TaxCalculationUpdate>();
 
-                var taxCalculations = await conn.QueryAsync(taxCalculationQuery);
-
-                // Set up a buffer block for parallel processing
-                var processingBlock = new ActionBlock<dynamic>(async taxCalculation =>
+                // Process each calculation in parallel
+                await Parallel.ForEachAsync(taxCalculations, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (taxCalculation, _) =>
                 {
                     int countryId = taxCalculation.FkCountryId;
                     string taxMethod = taxCalculation.TaxRegime;
                     decimal income = taxCalculation.Income;
                     decimal tax = 0m;
 
-                    switch (taxMethod)
+                    // Use pre-loaded tax data for calculations
+                    if (countryTaxData.TryGetValue(countryId, out var taxData))
                     {
-                        case "PROG":
-                            tax = CalculateProgressiveTax(countryTaxData[countryId].TaxBrackets, income);
-                            break;
-                        case "PERC":
-                            tax = CalculatePercentageTax(countryTaxData[countryId].PercentageRate, income);
-                            break;
-                        case "FLAT":
-                            tax = CalculateFlatTax(countryTaxData[countryId].FlatRate, countryTaxData[countryId].Threshold, income);
-                            break;
+                        switch (taxMethod)
+                        {
+                            case "PROG":
+                                tax = CalculateProgressiveTax(taxData.TaxBrackets, income);
+                                break;
+                            case "PERC":
+                                tax = CalculatePercentageTax(taxData.PercentageRate, income);
+                                break;
+                            case "FLAT":
+                                tax = CalculateFlatTax(taxData.FlatRate, taxData.Threshold, income);
+                                break;
+                        }
+
+                        decimal netPay = income - tax;
+                        updateList.Add(new TaxCalculationUpdate { TaxCalculationId = taxCalculation.PkTaxCalculationId, Tax = tax, NetPay = netPay });
                     }
-
-                    decimal netPay = income - tax;
-
-                    await UpdateTaxCalculationAsync(conn, taxCalculation.PkTaxCalculationId, tax, netPay);
-                },
-                new ExecutionDataflowBlockOptions
-                {
-                    MaxDegreeOfParallelism = Environment.ProcessorCount
                 });
 
-                // Post each tax calculation to the processing block
-                foreach (var taxCalculation in taxCalculations)
-                {
-                    processingBlock.Post(taxCalculation);
-                }
-
-                // Signal completion and wait for processing to finish
-                processingBlock.Complete();
-                await processingBlock.Completion;
+                // Perform batch update
+                await BulkUpdateTaxCalculationsAsync(conn, updateList);
 
                 sw.Stop();
-                System.Console.WriteLine($"{taxCalculations.Count()} calculations completed in {sw.ElapsedMilliseconds}ms");
-
+                Console.WriteLine($"{taxCalculations.Count} calculations completed in {sw.ElapsedMilliseconds}ms");
                 await conn.CloseAsync();
             }
             catch (Exception ex)
             {
-                System.Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Error: {ex.Message}");
             }
         }
 
@@ -108,10 +99,17 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
             return income > threshold ? flatRate : 0m;
         }
 
-        private async Task UpdateTaxCalculationAsync(SqlConnection conn, int taxCalculationId, decimal tax, decimal netPay)
+        private async Task BulkUpdateTaxCalculationsAsync(SqlConnection conn, List<TaxCalculationUpdate> updates)
         {
-            string updateQuery = "UPDATE TaxCalculation SET CalculatedTax = @Tax, NetPay = @NetPay WHERE PkTaxCalculationId = @TaxCalculationId";
-            await conn.ExecuteAsync(updateQuery, new { Tax = tax, NetPay = netPay, TaxCalculationId = taxCalculationId });
+            if (updates.Count == 0) return;
+
+            var sb = new StringBuilder();
+            foreach (var update in updates)
+            {
+                sb.AppendLine($"UPDATE TaxCalculation SET CalculatedTax = {update.Tax}, NetPay = {update.NetPay} WHERE PkTaxCalculationId = {update.TaxCalculationId};");
+            }
+
+            await conn.ExecuteAsync(sb.ToString());
         }
 
         private async Task<Dictionary<int, CountryTaxData>> LoadCountryTaxDataAsync()
@@ -172,6 +170,13 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
             public decimal LowerLimit { get; set; }
             public decimal UpperLimit { get; set; }
             public decimal Rate { get; set; }
+        }
+
+        private class TaxCalculationUpdate
+        {
+            public int TaxCalculationId { get; set; }
+            public decimal Tax { get; set; }
+            public decimal NetPay { get; set; }
         }
     }
 }
