@@ -1,6 +1,8 @@
 using System.Data.SqlClient;
 using System.Diagnostics;
 using Dapper;
+using System.Collections.Concurrent;
+using System.Threading.Tasks.Dataflow;
 
 namespace PaySpace.Calculation.Assessment.Console.UseCases
 {
@@ -15,10 +17,11 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
 
         public async Task CalculateAsync()
         {
-            var calculationCount = 0;
-
             try
             {
+                // Load tax rates and brackets in bulk to reduce individual queries
+                var countryTaxData = await LoadCountryTaxDataAsync();
+
                 string taxCalculationQuery = @"
                     SELECT tc.FkCountryId, tc.Income, tc.PkTaxCalculationId, c.TaxRegime
                     FROM TaxCalculation tc WITH(NOLOCK)
@@ -28,48 +31,54 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
                 Stopwatch sw = Stopwatch.StartNew();
 
                 using SqlConnection conn = new(ConnectionString);
-                await conn.OpenAsync(); // Ensure the connection is open
+                await conn.OpenAsync();
 
                 var taxCalculations = await conn.QueryAsync(taxCalculationQuery);
 
-                var updateTasks = new List<Task>();
-
-                foreach (var taxCalculation in taxCalculations)
+                // Set up a buffer block for parallel processing
+                var processingBlock = new ActionBlock<dynamic>(async taxCalculation =>
                 {
-                    calculationCount++;
-
                     int countryId = taxCalculation.FkCountryId;
                     string taxMethod = taxCalculation.TaxRegime;
                     decimal income = taxCalculation.Income;
-                    var tax = 0m;
-                    var netPay = 0m;
+                    decimal tax = 0m;
 
                     switch (taxMethod)
                     {
                         case "PROG":
-                            tax = await CalculateProgressiveTaxAsync(conn, countryId, income);
+                            tax = CalculateProgressiveTax(countryTaxData[countryId].TaxBrackets, income);
                             break;
-
                         case "PERC":
-                            tax = await CalculatePercentageTaxAsync(conn, countryId, income);
+                            tax = CalculatePercentageTax(countryTaxData[countryId].PercentageRate, income);
                             break;
-
                         case "FLAT":
-                            tax = await CalculateFlatTaxAsync(conn, countryId, income);
+                            tax = CalculateFlatTax(countryTaxData[countryId].FlatRate, countryTaxData[countryId].Threshold, income);
                             break;
                     }
 
-                    netPay = income - tax;
+                    decimal netPay = income - tax;
 
-                    updateTasks.Add(UpdateTaxCalculationAsync(conn, taxCalculation.PkTaxCalculationId, tax, netPay));
+                    await UpdateTaxCalculationAsync(conn, taxCalculation.PkTaxCalculationId, tax, netPay);
+                },
+                new ExecutionDataflowBlockOptions
+                {
+                    MaxDegreeOfParallelism = Environment.ProcessorCount
+                });
+
+                // Post each tax calculation to the processing block
+                foreach (var taxCalculation in taxCalculations)
+                {
+                    processingBlock.Post(taxCalculation);
                 }
 
-                await Task.WhenAll(updateTasks);
+                // Signal completion and wait for processing to finish
+                processingBlock.Complete();
+                await processingBlock.Completion;
 
                 sw.Stop();
-                System.Console.WriteLine($"{calculationCount} calculations completed in {sw.ElapsedMilliseconds}ms");
+                System.Console.WriteLine($"{taxCalculations.Count()} calculations completed in {sw.ElapsedMilliseconds}ms");
 
-                await conn.CloseAsync(); // Explicitly close the connection
+                await conn.CloseAsync();
             }
             catch (Exception ex)
             {
@@ -77,70 +86,92 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
             }
         }
 
-        private static async Task<decimal> CalculateProgressiveTaxAsync(SqlConnection conn, int countryId, decimal income)
+        private static decimal CalculateProgressiveTax(IEnumerable<TaxBracketLine> brackets, decimal income)
         {
-            string taxBracketLineQuery = @"
-                SELECT LowerLimit, UpperLimit, Rate
-                FROM TaxBracketLine l WITH(NOLOCK)
-                INNER JOIN TaxBracket b WITH(NOLOCK) ON l.FkTaxBracketId = b.PkTaxBracketId
-                WHERE b.FkCountryId = @CountryId
-                ORDER BY OrderNumber";
-
-            var taxBracketLines = await conn.QueryAsync(taxBracketLineQuery, new { CountryId = countryId });
-
-            foreach (var taxBracketLine in taxBracketLines)
+            foreach (var bracket in brackets)
             {
-                if (income > taxBracketLine.LowerLimit && income <= taxBracketLine.UpperLimit)
+                if (income > bracket.LowerLimit && income <= bracket.UpperLimit)
                 {
-                    return income * (taxBracketLine.Rate / 100);
+                    return income * (bracket.Rate / 100);
                 }
             }
-
             return 0m;
         }
 
-        private static async Task<decimal> CalculatePercentageTaxAsync(SqlConnection conn, int countryId, decimal income)
+        private static decimal CalculatePercentageTax(decimal percentage, decimal income)
         {
-            string taxRateQuery = "SELECT Rate FROM TaxRate WHERE FkCountryId = @CountryId";
-            var taxRate = await conn.QuerySingleOrDefaultAsync(taxRateQuery, new { CountryId = countryId });
-
-            var percentage = 0m;
-
-            if (taxRate != null && decimal.TryParse(taxRate.Rate.ToString(), out percentage))
-            {
-                return income * (percentage / 100);
-            }
-
-            return 0m;
+            return income * (percentage / 100);
         }
 
-        private static async Task<decimal> CalculateFlatTaxAsync(SqlConnection conn, int countryId, decimal income)
+        private static decimal CalculateFlatTax(decimal flatRate, decimal threshold, decimal income)
         {
-            string queryString = "SELECT Rate, RateCode FROM TaxRate WHERE FkCountryId = @CountryId";
-            var taxRates = await conn.QueryAsync(queryString, new { CountryId = countryId });
-
-            decimal flatRate = 0m;
-            decimal minimumThreshold = 0m;
-
-            foreach (var rate in taxRates)
-            {
-                if (rate.RateCode == "FLATRATE")
-                {
-                    flatRate = (decimal)rate.Rate;
-                }
-                else if (rate.RateCode == "THRES")
-                {
-                    minimumThreshold = (decimal)rate.Rate;
-                }
-            }
-
-            return income > minimumThreshold ? flatRate : 0m;
+            return income > threshold ? flatRate : 0m;
         }
 
-        private static async Task UpdateTaxCalculationAsync(SqlConnection conn, int taxCalculationId, decimal tax, decimal netPay)
+        private async Task UpdateTaxCalculationAsync(SqlConnection conn, int taxCalculationId, decimal tax, decimal netPay)
         {
             string updateQuery = "UPDATE TaxCalculation SET CalculatedTax = @Tax, NetPay = @NetPay WHERE PkTaxCalculationId = @TaxCalculationId";
             await conn.ExecuteAsync(updateQuery, new { Tax = tax, NetPay = netPay, TaxCalculationId = taxCalculationId });
+        }
+
+        private async Task<Dictionary<int, CountryTaxData>> LoadCountryTaxDataAsync()
+        {
+            using SqlConnection conn = new(ConnectionString);
+            await conn.OpenAsync();
+
+            // Load Tax Brackets
+            var taxBracketsQuery = @"
+                SELECT b.FkCountryId, l.LowerLimit, l.UpperLimit, l.Rate
+                FROM TaxBracketLine l WITH(NOLOCK)
+                INNER JOIN TaxBracket b WITH(NOLOCK) ON l.FkTaxBracketId = b.PkTaxBracketId";
+            var taxBrackets = await conn.QueryAsync<TaxBracketLine>(taxBracketsQuery);
+
+            // Load Tax Rates
+            var taxRatesQuery = "SELECT FkCountryId, Rate, RateCode FROM TaxRate";
+            var taxRates = await conn.QueryAsync(taxRatesQuery);
+
+            // Organize data by country
+            var countryTaxData = new Dictionary<int, CountryTaxData>();
+
+            foreach (var taxRate in taxRates)
+            {
+                if (!countryTaxData.ContainsKey(taxRate.FkCountryId))
+                    countryTaxData[taxRate.FkCountryId] = new CountryTaxData();
+
+                if (taxRate.RateCode == "FLATRATE")
+                    countryTaxData[taxRate.FkCountryId].FlatRate = (decimal)taxRate.Rate;
+                else if (taxRate.RateCode == "THRES")
+                    countryTaxData[taxRate.FkCountryId].Threshold = (decimal)taxRate.Rate;
+                else
+                    countryTaxData[taxRate.FkCountryId].PercentageRate = (decimal)taxRate.Rate;
+            }
+
+            foreach (var bracket in taxBrackets)
+            {
+                if (!countryTaxData.ContainsKey(bracket.FkCountryId))
+                    countryTaxData[bracket.FkCountryId] = new CountryTaxData();
+
+                countryTaxData[bracket.FkCountryId].TaxBrackets.Add(bracket);
+            }
+
+            await conn.CloseAsync();
+            return countryTaxData;
+        }
+
+        private class CountryTaxData
+        {
+            public decimal PercentageRate { get; set; }
+            public decimal FlatRate { get; set; }
+            public decimal Threshold { get; set; }
+            public List<TaxBracketLine> TaxBrackets { get; set; } = new();
+        }
+
+        private class TaxBracketLine
+        {
+            public int FkCountryId { get; set; }
+            public decimal LowerLimit { get; set; }
+            public decimal UpperLimit { get; set; }
+            public decimal Rate { get; set; }
         }
     }
 }
