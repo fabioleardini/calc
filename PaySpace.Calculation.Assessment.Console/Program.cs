@@ -1,13 +1,16 @@
 ﻿using PaySpace.Calculation.Assessment.Console.UseCases;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using PaySpace.Calculation.Assessment.Console.Infrastructure;
 
 var host = new HostBuilder()
                 .ConfigureServices((hostContext, services) =>
                 {
                     services
                         .AddTransient<ICalculateUseCase, CalculateUseCase>()
-                        .AddTransient<IOldCalculateUseCase, OldCalculateUseCase>();
+                        .AddTransient<IOldCalculateUseCase, OldCalculateUseCase>()
+                        .AddTransient<ITaxCalculationRepository, TaxCalculationRepository>()
+                        .AddTransient<ITaxBracketLineRepositoryRepository, TaxBracketLineRepositoryRepository>();
                 })
                 .Build();
 
