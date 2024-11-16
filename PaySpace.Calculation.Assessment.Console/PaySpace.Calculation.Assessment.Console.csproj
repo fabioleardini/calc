@@ -6,8 +6,15 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.35" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
-    <PackageReference Include="System.Data.SqlClient" Version="4.8.6" />
+    <Compile Remove="UseCases\Old.cs"/>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="UseCases\Old.cs"/>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.35"/>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1"/>
+    <PackageReference Include="System.Data.SqlClient" Version="4.8.6"/>
+    <PackageReference Include="Z.Dapper.Plus" Version="7.5.5"/>
   </ItemGroup>
 </Project>

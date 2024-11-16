@@ -2,6 +2,8 @@ using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Text;
 using Dapper;
+using PaySpace.Calculation.Assessment.Console.Domain;
+using Z.Dapper.Plus;
 
 namespace PaySpace.Calculation.Assessment.Console.UseCases
 {
@@ -33,7 +35,7 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
                 await conn.OpenAsync();
                 var taxCalculations = (await conn.QueryAsync(taxCalculationQuery)).ToList();
                 
-                var updateList = new List<TaxCalculationUpdate>();
+                var updateList = new List<TaxCalculation>();
 
                 // Process each calculation in parallel
                 await Parallel.ForEachAsync(taxCalculations, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, async (taxCalculation, _) =>
@@ -60,7 +62,7 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
                         }
 
                         decimal netPay = income - tax;
-                        updateList.Add(new TaxCalculationUpdate { TaxCalculationId = taxCalculation.PkTaxCalculationId, Tax = tax, NetPay = netPay });
+                        updateList.Add(new TaxCalculation { PkTaxCalculationId = taxCalculation.PkTaxCalculationId, CalculatedTax = tax, NetPay = netPay });
                     }
                 });
 
@@ -99,17 +101,20 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
             return income > threshold ? flatRate : 0m;
         }
 
-        private async Task BulkUpdateTaxCalculationsAsync(SqlConnection conn, List<TaxCalculationUpdate> updates)
+        private async Task BulkUpdateTaxCalculationsAsync(SqlConnection conn, List<TaxCalculation> updates)
         {
             if (updates.Count == 0) return;
 
-            var sb = new StringBuilder();
-            foreach (var update in updates)
+    	    try
             {
-                sb.AppendLine($"UPDATE TaxCalculation SET CalculatedTax = {update.Tax}, NetPay = {update.NetPay} WHERE PkTaxCalculationId = {update.TaxCalculationId};");
+                // await conn.ExecuteAsync(sb.ToString());
+                conn.BulkUpdate($"UPDATE TaxCalculation SET CalculatedTax = @CalculatedTax, NetPay = @NetPay WHERE PkTaxCalculationId = @PkTaxCalculationId;",
+                    updates);
             }
-
-            await conn.ExecuteAsync(sb.ToString());
+            catch (Exception ex)
+            {
+                System.Console.WriteLine($"Error updating tax calculations: {ex.Message}");
+            }
         }
 
         private async Task<Dictionary<int, CountryTaxData>> LoadCountryTaxDataAsync()
@@ -170,13 +175,6 @@ namespace PaySpace.Calculation.Assessment.Console.UseCases
             public decimal LowerLimit { get; set; }
             public decimal UpperLimit { get; set; }
             public decimal Rate { get; set; }
-        }
-
-        private class TaxCalculationUpdate
-        {
-            public int TaxCalculationId { get; set; }
-            public decimal Tax { get; set; }
-            public decimal NetPay { get; set; }
         }
     }
 }
